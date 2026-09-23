@@ -1,0 +1,6 @@
+.env
+*.json
+ethold
+.git
+.gitignore
+README.md

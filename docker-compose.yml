@@ -1,0 +1,26 @@
+services:
+  ethold:
+    build: .
+    container_name: ethold
+    restart: unless-stopped
+    # Specify directly or load from optional .env file:
+    # environment:
+    #   - ETHOL_EMAIL=1234567890
+    #   - ETHOL_PASSWORD=secret_password_here
+    #   - TELEGRAM_TOKEN=123456:ABC-DEF
+    #   - TELEGRAM_CHAT_ID=987654321
+    #   - TELEGRAM_COMMAND_THREAD_ID=0
+    #   - TELEGRAM_NOTIF_THREAD_ID=0
+    #   - ETHOL_AUTO_PRESENCE=true
+    #   - GOMEMLIMIT=48MiB # recommended for 64MB container limits
+    # tty: true # enable ANSI colors in docker logs
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - state:/app/data
+    command: ["--state", "/app/data/attended_keys.json"]
+    # Set ETHOL_HEALTH_ADDR=0.0.0.0:8080 to enable local health checks.
+
+volumes:
+  state:

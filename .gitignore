@@ -1,0 +1,6 @@
+.env
+credentials.json
+attended_keys.json
+/ethold
+*.log
+*.tmp
