@@ -33,7 +33,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.1.6
 
       - name: Build binaries
         run: |
@@ -60,7 +60,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.8.2
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -95,7 +95,7 @@ func TestLoadConfigPrecedence(t *testing.T) {
 ETHOL_EMAIL=file_user
 ETHOL_PASSWORD=file_pass
 TELEGRAM_TOKEN=file_token
-TELEGRAM_CHAT_ID=file_chat
+TELEGRAM_CHAT_ID=998877
 `
 	if err := os.WriteFile(envPath, []byte(content), 0600); err != nil {
 		t.Fatalf("write temp env: %v", err)
@@ -126,8 +126,8 @@ TELEGRAM_CHAT_ID=file_chat
 	if cfg.TelegramToken != "env_token" {
 		t.Errorf("expected token 'env_token' (env override), got '%s'", cfg.TelegramToken)
 	}
-	if cfg.TelegramChatID != "file_chat" {
-		t.Errorf("expected chat id 'file_chat' (file fallback), got '%s'", cfg.TelegramChatID)
+	if cfg.TelegramChatID != "998877" {
+		t.Errorf("expected chat id '998877' (file fallback), got '%s'", cfg.TelegramChatID)
 	}
 	if cfg.TelegramCommandThreadID != 444 {
 		t.Errorf("expected command thread 444, got %d", cfg.TelegramCommandThreadID)
@@ -189,6 +189,44 @@ func TestLoadConfigUserIDs(t *testing.T) {
 	}
 	if len(cfg.TelegramAllowedUserIDs) != 2 || cfg.TelegramAllowedUserIDs[1] != 20 {
 		t.Fatalf("unexpected allowed users: %v", cfg.TelegramAllowedUserIDs)
+	}
+}
+
+func TestLoadConfigRejectsPartialTelegramConfig(t *testing.T) {
+	t.Setenv("ETHOL_EMAIL", "user")
+	t.Setenv("ETHOL_PASSWORD", "pass")
+	t.Setenv("TELEGRAM_TOKEN", "token")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected partial Telegram config error")
+	}
+}
+
+func TestLoadConfigRejectsGroupWithoutUsers(t *testing.T) {
+	t.Setenv("ETHOL_EMAIL", "user")
+	t.Setenv("ETHOL_PASSWORD", "pass")
+	t.Setenv("TELEGRAM_TOKEN", "token")
+	t.Setenv("TELEGRAM_CHAT_ID", "-100123")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected group allowlist error")
+	}
+}
+
+func TestLoadConfigRejectsInvalidHealthAddress(t *testing.T) {
+	t.Setenv("ETHOL_EMAIL", "user")
+	t.Setenv("ETHOL_PASSWORD", "pass")
+	t.Setenv("ETHOL_HEALTH_ADDR", "localhost")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected health address error")
+	}
+}
+
+func TestLoadConfigRejectsInvalidTelegramChatID(t *testing.T) {
+	t.Setenv("ETHOL_EMAIL", "user")
+	t.Setenv("ETHOL_PASSWORD", "pass")
+	t.Setenv("TELEGRAM_TOKEN", "token")
+	t.Setenv("TELEGRAM_CHAT_ID", "chat")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("expected chat ID validation error")
 	}
 }
 

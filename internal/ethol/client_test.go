@@ -215,6 +215,25 @@ func TestHeaderTransportRetriesIdempotentTransientFailures(t *testing.T) {
 	}
 }
 
+func TestHeaderTransportRetriesRetryAfterResponse(t *testing.T) {
+	var attempts int
+	transport := &headerTransport{base: &testRoundTripper{fn: func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Header:     http.Header{"Retry-After": []string{"0"}},
+				Body:       http.NoBody,
+			}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	}}}
+	resp, err := transport.RoundTrip(httptest.NewRequest(http.MethodGet, "https://example.test", nil))
+	if err != nil || resp.StatusCode != http.StatusOK || attempts != 2 {
+		t.Fatalf("RoundTrip = status %v, err %v, attempts %d", resp.StatusCode, err, attempts)
+	}
+}
+
 func TestHeaderTransportDoesNotRetryPost(t *testing.T) {
 	var attempts int
 	transport := &headerTransport{base: &testRoundTripper{fn: func(req *http.Request) (*http.Response, error) {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -115,6 +116,22 @@ func LoadConfig(path string, overrides ...Config) (*Config, error) {
 
 	if cfg.Username == "" || cfg.Password == "" {
 		return nil, errors.New("ETHOL_EMAIL and ETHOL_PASSWORD are required in config")
+	}
+	if (cfg.TelegramToken == "") != (cfg.TelegramChatID == "") {
+		return nil, errors.New("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID must be configured together")
+	}
+	if cfg.TelegramChatID != "" {
+		if _, err := strconv.ParseInt(strings.TrimSpace(cfg.TelegramChatID), 10, 64); err != nil {
+			return nil, errors.New("TELEGRAM_CHAT_ID must be an integer")
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(cfg.TelegramChatID), "-") && len(allowedUsers) == 0 {
+		return nil, errors.New("TELEGRAM_ALLOWED_USER_IDS is required for group chats")
+	}
+	if cfg.HealthAddr != "" {
+		if _, _, err := net.SplitHostPort(cfg.HealthAddr); err != nil {
+			return nil, fmt.Errorf("ETHOL_HEALTH_ADDR must be host:port: %w", err)
+		}
 	}
 
 	return cfg, nil

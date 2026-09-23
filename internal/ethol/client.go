@@ -108,8 +108,10 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return resp, err
 		}
 		if resp != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-			_ = resp.Body.Close()
+			if resp.Body != nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+				_ = resp.Body.Close()
+			}
 		}
 		if err := waitTransportRetry(req.Context(), resp, attempt); err != nil {
 			return nil, err

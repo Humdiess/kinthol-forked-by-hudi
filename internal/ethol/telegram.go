@@ -18,47 +18,6 @@ import (
 	"time"
 )
 
-type chatRateLimiter struct {
-	mu           sync.Mutex
-	tokens       float64
-	maxTokens    float64
-	refillRate   float64
-	lastRefill   time.Time
-	lastWarnTime time.Time
-}
-
-func newChatRateLimiter(burst float64, refillPerSec float64) *chatRateLimiter {
-	return &chatRateLimiter{
-		tokens:     burst,
-		maxTokens:  burst,
-		refillRate: refillPerSec,
-		lastRefill: time.Now(),
-	}
-}
-
-func (rl *chatRateLimiter) Allow(now time.Time, warnCooldown time.Duration) (allowed bool, warnAllowed bool) {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	elapsed := now.Sub(rl.lastRefill).Seconds()
-	rl.lastRefill = now
-	rl.tokens += elapsed * rl.refillRate
-	if rl.tokens > rl.maxTokens {
-		rl.tokens = rl.maxTokens
-	}
-
-	if rl.tokens >= 1.0 {
-		rl.tokens -= 1.0
-		return true, false
-	}
-
-	if rl.lastWarnTime.IsZero() || now.Sub(rl.lastWarnTime) >= warnCooldown {
-		rl.lastWarnTime = now
-		return false, true
-	}
-	return false, false
-}
-
 type TelegramNotifier struct {
 	client          *http.Client
 	pollClient      *http.Client
@@ -754,40 +713,6 @@ func (tn *TelegramNotifier) SendChatAction(ctx context.Context, action string, t
 	return nil
 }
 
-type tgChat struct {
-	ID int64 `json:"id"`
-}
-
-type tgUser struct {
-	ID int64 `json:"id"`
-}
-
-type tgMessage struct {
-	MessageID       int64  `json:"message_id"`
-	Chat            tgChat `json:"chat"`
-	Text            string `json:"text"`
-	From            tgUser `json:"from"`
-	MessageThreadID int64  `json:"message_thread_id,omitempty"`
-}
-
-type tgCallbackQuery struct {
-	ID      string     `json:"id"`
-	From    tgUser     `json:"from"`
-	Message *tgMessage `json:"message,omitempty"`
-	Data    string     `json:"data"`
-}
-
-type tgUpdate struct {
-	UpdateID      int64            `json:"update_id"`
-	Message       *tgMessage       `json:"message,omitempty"`
-	CallbackQuery *tgCallbackQuery `json:"callback_query,omitempty"`
-}
-
-type tgUpdatesResponse struct {
-	Ok     bool       `json:"ok"`
-	Result []tgUpdate `json:"result"`
-}
-
 var commandTextAliases = map[string]string{
 	// Keyboard buttons & friendly text
 	"📅 jadwal":         "/jadwal",
@@ -849,25 +774,6 @@ var commandTextAliases = map[string]string{
 	"debug":         "/debug",
 	"🏓 ping":        "/ping",
 	"ping":          "/ping",
-}
-
-func parseCommand(text string) string {
-	text = strings.TrimSpace(text)
-	if strings.HasPrefix(text, "/") {
-		fields := strings.Fields(text)
-		if len(fields) == 0 {
-			return ""
-		}
-		cmd := fields[0]
-		if idx := strings.Index(cmd, "@"); idx != -1 {
-			cmd = cmd[:idx]
-		}
-		return cmd
-	}
-	if cmd, ok := commandTextAliases[strings.ToLower(text)]; ok {
-		return cmd
-	}
-	return ""
 }
 
 type tgAnswerCallbackPayload struct {
