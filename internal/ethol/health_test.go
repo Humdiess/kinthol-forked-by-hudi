@@ -9,7 +9,8 @@ import (
 )
 
 func TestHealthServerReportsNotReadyBeforeAuthentication(t *testing.T) {
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	probe, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +26,11 @@ func TestHealthServerReportsNotReadyBeforeAuthentication(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
 	var resp *http.Response
 	for range 20 {
-		resp, err = client.Get("http://" + addr + "/readyz")
+		req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/readyz", nil)
+		if reqErr != nil {
+			t.Fatal(reqErr)
+		}
+		resp, err = client.Do(req)
 		if err == nil {
 			break
 		}

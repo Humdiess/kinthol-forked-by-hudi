@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func waitPendingDeletions(tn *TelegramNotifier) {
@@ -1810,6 +1811,33 @@ func TestTelegramNotifier_SendChatAction(t *testing.T) {
 	emptyTN := NewTelegramNotifier(client, server.URL, "", "")
 	if err := emptyTN.SendChatAction(context.Background(), "typing", 0); err != nil {
 		t.Errorf("expected nil error for empty credentials, got %v", err)
+	}
+}
+
+func TestSplitMessageSafeBoundary(t *testing.T) {
+	text := "<b>" + strings.Repeat("x", 500) + "</b>"
+	chunks := splitMessage(text, 64)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	for i, c := range chunks {
+		if !utf8.ValidString(c) {
+			t.Errorf("chunk %d is not valid UTF-8: %q", i, c)
+		}
+		if strings.Count(c, "<") != strings.Count(c, ">") {
+			t.Errorf("chunk %d split an HTML tag: %q", i, c)
+		}
+	}
+
+	emoji := strings.Repeat("\U0001F600", 100)
+	for i, c := range splitMessage(emoji, 50) {
+		if !utf8.ValidString(c) {
+			t.Errorf("emoji chunk %d split a rune", i)
+		}
+	}
+
+	if got := splitMessage("hello", 64); len(got) != 1 || got[0] != "hello" {
+		t.Errorf("short text should stay one chunk, got %v", got)
 	}
 }
 

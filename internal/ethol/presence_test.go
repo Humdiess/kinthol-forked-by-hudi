@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -33,10 +34,10 @@ func TestCourseAndPresenceEngine(t *testing.T) {
 					"nama_matakuliah": map[string]any{"nama": "Sistem Operasi"},
 				},
 				{
-					"nomor":        102,
+					"nomor":       102,
 					"jenisSchema": 0,
-					"dosen":        "Ir. Budi",
-					"matakuliah":   "Jaringan Komputer",
+					"dosen":       "Ir. Budi",
+					"matakuliah":  "Jaringan Komputer",
 				},
 			})
 
@@ -134,6 +135,8 @@ func TestExtractPresenceKey(t *testing.T) {
 		{"array with key", `[{"key": "key-1"}]`, "key-1"},
 		{"array empty", `[]`, ""},
 		{"array without key", `[{"foo": "bar"}]`, ""},
+		{"array first empty then key", `[{"foo": "bar"}, {"key": "key-2"}]`, "key-2"},
+		{"array multiple keys", `[{"key": "first"}, {"key": "second"}]`, "first"},
 		{"object with key", `{"key": "key-2"}`, "key-2"},
 		{"object null key", `{"key": null}`, ""},
 		{"object empty", `{}`, ""},
@@ -148,6 +151,73 @@ func TestExtractPresenceKey(t *testing.T) {
 				t.Errorf("extractPresenceKey() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPresenceSubmitSuccessClassification(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   map[string]any
+		wantOK bool
+	}{
+		{"explicit sukses true", map[string]any{"sukses": true, "pesan": "ok"}, true},
+		{"already recorded", map[string]any{"sukses": false, "pesan": "Presensi sudah pernah dilakukan"}, true},
+		{"berhasil with tidak", map[string]any{"pesan": "Presensi berhasil, tidak ada kendala"}, true},
+		{"closed class mentioning sudah", map[string]any{"sukses": false, "pesan": "Kelas sudah ditutup"}, false},
+		{"failure mentioning sudah", map[string]any{"sukses": false, "pesan": "Presensi sudah kadaluarsa"}, false},
+		{"plain failure", map[string]any{"sukses": false, "pesan": "Presensi gagal"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tt.body)
+			}))
+			defer server.Close()
+
+			client, err := NewHTTPClient()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pe := NewPresenceEngine(client, server.URL)
+			_, ok, err := pe.Submit(context.Background(), Course{Nomor: 1}, "key", 1)
+			if err != nil {
+				t.Fatalf("submit error: %v", err)
+			}
+			if ok != tt.wantOK {
+				t.Errorf("isSuccess = %v, want %v", ok, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestPresenceSubmitRetriesTransientError(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sukses": true, "pesan": "Presensi berhasil"})
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pe := NewPresenceEngine(client, server.URL)
+	_, ok, err := pe.Submit(context.Background(), Course{Nomor: 1}, "key", 1)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if !ok {
+		t.Errorf("expected success after retry")
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Errorf("expected 2 attempts, got %d", got)
 	}
 }
 

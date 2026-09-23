@@ -729,6 +729,57 @@ func TestScannerComputeScanPlanUnauthorizedRetry(t *testing.T) {
 	}
 }
 
+func TestScannerComputeScanPlanScheduleErrorFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/auth/cas-redirect":
+			http.Redirect(w, r, "/cas/login?service=test", http.StatusFound)
+		case "/cas/login":
+			if r.Method == http.MethodGet {
+				w.Header().Set("Content-Type", "text/html")
+				fmt.Fprint(w, `<form id="fm1" action="/cas/login" method="post"><input name="username"/><input name="password"/></form>`)
+				return
+			}
+			http.SetCookie(w, &http.Cookie{Name: "ETHOL_SESS", Value: "session-ok", Path: "/"})
+			http.Redirect(w, r, "/api/auth/validasi-token", http.StatusFound)
+		case "/api/auth/validasi-token":
+			w.Write([]byte(`{"nomor":1001,"nama":"Budi","nipnrp":"3120600001"}`))
+		case "/api/auth/config":
+			json.NewEncoder(w).Encode(map[string]any{"tahun_aktif": 2024, "semester_aktif": 1})
+		case "/api/kuliah":
+			json.NewEncoder(w).Encode([]map[string]any{{"nomor": 501, "jenisSchema": 0, "matakuliah": "Algoritma"}})
+		case "/api/jadwal/jadwal-online":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	auth := NewAuthManager(client, server.URL, "user", "pass")
+	if _, err := auth.Login(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	courses := NewCourseManager(client, server.URL, 10*time.Minute)
+	academic := NewAcademicManager(client, server.URL, 10*time.Minute)
+	presence := NewPresenceEngine(client, server.URL)
+	scanner := NewScanner(auth, courses, presence, academic, nil, nil, 1)
+
+	plan := scanner.computeScanPlan(context.Background(), time.Now())
+	if plan.Interval != BackgroundInterval {
+		t.Errorf("expected background interval on schedule error, got %v", plan.Interval)
+	}
+	if plan.InWindow {
+		t.Errorf("expected InWindow false on schedule error")
+	}
+}
+
 func TestScanner_OutageNotification_ServerErrorAndRecovery(t *testing.T) {
 	var (
 		serverFail   atomic.Bool
@@ -1135,4 +1186,3 @@ func TestScanner_NotifyStartup(t *testing.T) {
 		t.Errorf("expected nil error for nil notifier, got: %v", err)
 	}
 }
-

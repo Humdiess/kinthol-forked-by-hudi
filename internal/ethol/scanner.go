@@ -571,9 +571,11 @@ func (s *Scanner) computeScanPlan(ctx context.Context, now time.Time) ScanPlan {
 		}
 	}
 	if err != nil {
-		slog.Warn("Failed to get schedule for scan plan, falling back to active interval", "error", err)
+		// Unknown windows: use the background interval so a broken schedule
+		// endpoint cannot trigger full-course scans every active cycle.
+		slog.Warn("Failed to get schedule for scan plan, falling back to background interval", "error", err)
 		return ScanPlan{
-			Interval: ActiveInterval,
+			Interval: BackgroundInterval,
 			Courses:  nil,
 			InWindow: false,
 		}

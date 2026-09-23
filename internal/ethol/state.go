@@ -36,10 +36,6 @@ type StateManager struct {
 	lockFile *os.File
 }
 
-func NewStateManager(path string) (*StateManager, error) {
-	return newStateManager(path, false)
-}
-
 func NewExclusiveStateManager(path string) (*StateManager, error) {
 	return newStateManager(path, true)
 }

@@ -8,7 +8,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
+
+const presenceSubmitRetries = 2
 
 type PresenceEngine struct {
 	client  *http.Client
@@ -93,15 +96,9 @@ func (pe *PresenceEngine) Submit(ctx context.Context, c Course, key string, stud
 	devLog("Submitting presence payload", "course", c.CourseName())
 
 	url := pe.baseURL + "/api/presensi/mahasiswa"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	resp, err := pe.submitWithRetry(ctx, url, data)
 	if err != nil {
-		return "", false, fmt.Errorf("create presence submit req: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := pe.client.Do(req)
-	if err != nil {
-		return "", false, fmt.Errorf("submit presence request: %w", err)
+		return "", false, err
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
@@ -127,22 +124,94 @@ func (pe *PresenceEngine) Submit(ctx context.Context, c Course, key string, stud
 		msg = fmt.Sprintf("%v", res.Message)
 	}
 
-	isSuccess := false
-	if b, ok := res.Sukses.(bool); ok && b {
-		isSuccess = true
-	} else if b, ok := res.Success.(bool); ok && b {
-		isSuccess = true
-	} else if s := fmt.Sprintf("%v", res.Status); s == "200" || s == "true" {
-		isSuccess = true
-	} else {
-		lowerMsg := strings.ToLower(msg)
-		if strings.Contains(lowerMsg, "sudah") || strings.Contains(lowerMsg, "berhasil") {
-			isSuccess = true
-		}
-	}
+	isSuccess := classifyPresenceSuccess(res, msg)
 	devLog("Presence submitted", "course", c.CourseName(), "is_success", isSuccess, "msg", msg)
 
 	return msg, isSuccess, nil
+}
+
+// presenceFailureWords mark a response as failed even when it mentions "sudah"
+// (e.g. "kelas sudah ditutup"), preventing false success records.
+var presenceFailureWords = []string{
+	"gagal", "tidak", "belum", "bukan", "error", "invalid",
+	"ditutup", "kadaluarsa", "expired", "salah", "ditolak", "dibatalkan", "batal",
+}
+
+// presenceRecordedWords qualify "sudah" as an idempotent already-recorded result.
+var presenceRecordedWords = []string{
+	"presensi", "absen", "hadir", "dilakukan", "tercatat", "melakukan", "disimpan",
+}
+
+func containsAny(s string, words []string) bool {
+	for _, w := range words {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyPresenceSuccess trusts explicit API status fields, then falls back to
+// message text. The text fallback requires a success or already-recorded phrase
+// and rejects failure indicators, so an error mentioning "sudah" is not success.
+func classifyPresenceSuccess(res presenceSubmitResponse, msg string) bool {
+	if b, ok := res.Sukses.(bool); ok && b {
+		return true
+	}
+	if b, ok := res.Success.(bool); ok && b {
+		return true
+	}
+	if s := fmt.Sprintf("%v", res.Status); s == "200" || s == "true" {
+		return true
+	}
+
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "berhasil") {
+		return true
+	}
+	if containsAny(lower, presenceFailureWords) {
+		return false
+	}
+	return strings.Contains(lower, "sudah") && containsAny(lower, presenceRecordedWords)
+}
+
+// submitWithRetry posts the presence payload, retrying transient gateway errors
+// and transport failures. Retry is safe: the server dedupes by key/student.
+func (pe *PresenceEngine) submitWithRetry(ctx context.Context, url string, data []byte) (*http.Response, error) {
+	var lastStatus int
+	for attempt := 0; attempt <= presenceSubmitRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("create presence submit req: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := pe.client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil || attempt == presenceSubmitRetries {
+				return nil, fmt.Errorf("submit presence request: %w", err)
+			}
+		} else if !retryablePresenceStatus(resp.StatusCode) || attempt == presenceSubmitRetries {
+			return resp, nil
+		} else {
+			lastStatus = resp.StatusCode
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+		}
+
+		timer := time.NewTimer(transportRetryBase * time.Duration(1<<attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, fmt.Errorf("submit presence HTTP %d", lastStatus)
+}
+
+func retryablePresenceStatus(code int) bool {
+	return code == http.StatusBadGateway || code == http.StatusServiceUnavailable || code == http.StatusGatewayTimeout
 }
 
 func extractPresenceKey(raw []byte) string {
@@ -158,8 +227,15 @@ func extractPresenceKey(raw []byte) string {
 	switch trimmed[0] {
 	case '[':
 		var list []keyItem
-		if err := json.Unmarshal(trimmed, &list); err == nil && len(list) > 0 {
-			return list[0].Key
+		if err := json.Unmarshal(trimmed, &list); err == nil {
+			if len(list) > 0 && list[0].Key != "" {
+				return list[0].Key
+			}
+			for _, item := range list {
+				if item.Key != "" {
+					return item.Key
+				}
+			}
 		}
 	case '{':
 		var single keyItem

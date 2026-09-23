@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+// NewStateManager is a non-exclusive state manager used only by tests.
+func NewStateManager(path string) (*StateManager, error) {
+	return newStateManager(path, false)
+}
+
 func TestStateManager(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "attended_keys.json")

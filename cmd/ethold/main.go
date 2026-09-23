@@ -157,7 +157,7 @@ func run() error {
 			return err
 		}
 		presence = ethol.NewPresenceEngine(client, baseURL)
-		defer state.Close()
+		defer func() { _ = state.Close() }()
 	} else {
 		slog.Info("Auto-presence disabled, running in academic-only mode")
 	}

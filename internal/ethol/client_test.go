@@ -205,8 +205,11 @@ func TestHeaderTransportRetriesIdempotentTransientFailures(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 	}}}
-	req := httptest.NewRequest(http.MethodGet, "https://example.test", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
 	resp, err := transport.RoundTrip(req)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("RoundTrip = %v, %v", resp, err)
 	}
@@ -228,7 +231,10 @@ func TestHeaderTransportRetriesRetryAfterResponse(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 	}}}
-	resp, err := transport.RoundTrip(httptest.NewRequest(http.MethodGet, "https://example.test", nil))
+	resp, err := transport.RoundTrip(httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil))
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil || resp.StatusCode != http.StatusOK || attempts != 2 {
 		t.Fatalf("RoundTrip = status %v, err %v, attempts %d", resp.StatusCode, err, attempts)
 	}
@@ -240,8 +246,11 @@ func TestHeaderTransportDoesNotRetryPost(t *testing.T) {
 		attempts++
 		return nil, errors.New("temporary")
 	}}}
-	req := httptest.NewRequest(http.MethodPost, "https://example.test", nil)
-	_, _ = transport.RoundTrip(req)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.test", nil)
+	resp, _ := transport.RoundTrip(req)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", attempts)
 	}

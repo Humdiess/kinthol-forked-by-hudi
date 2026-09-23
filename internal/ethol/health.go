@@ -33,10 +33,12 @@ func StartHealthServer(ctx context.Context, addr string, scanner *Scanner) error
 		})
 	})
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	listener, err := net.Listen("tcp", addr)
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
+	//nolint:gosec // shutdown must use a fresh context; the daemon context is already cancelled
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

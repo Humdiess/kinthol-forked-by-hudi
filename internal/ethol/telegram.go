@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type TelegramNotifier struct {
@@ -206,8 +207,9 @@ func splitMessage(text string, maxLen int) []string {
 				current.Reset()
 				current.Grow(maxLen)
 			}
-			chunks = append(chunks, line[:maxLen])
-			line = line[maxLen:]
+			head, tail := splitAtSafeBoundary(line, maxLen)
+			chunks = append(chunks, head)
+			line = tail
 		}
 
 		if current.Len() > 0 {
@@ -220,6 +222,32 @@ func splitMessage(text string, maxLen int) []string {
 		chunks = append(chunks, current.String())
 	}
 	return chunks
+}
+
+// splitAtSafeBoundary cuts s at or before maxLen without splitting an HTML tag,
+// an HTML entity, or a UTF-8 rune. Both returned parts stay valid for Telegram.
+func splitAtSafeBoundary(s string, maxLen int) (string, string) {
+	cut := maxLen
+	if cut >= len(s) {
+		return s, ""
+	}
+	if lt := strings.LastIndexByte(s[:cut], '<'); lt >= 0 {
+		if gt := strings.LastIndexByte(s[:cut], '>'); gt < lt {
+			cut = lt
+		}
+	}
+	if amp := strings.LastIndexByte(s[:cut], '&'); amp >= 0 {
+		if semi := strings.LastIndexByte(s[:cut], ';'); semi < amp {
+			cut = amp
+		}
+	}
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	if cut <= 0 {
+		cut = maxLen
+	}
+	return s[:cut], s[cut:]
 }
 
 func (tn *TelegramNotifier) SendMessage(ctx context.Context, text string) error {
@@ -1088,7 +1116,7 @@ func (tn *TelegramNotifier) PollOnce(ctx context.Context, offset int64, handler 
 			}
 		}
 
-		devLogTelegramCommand(rawChatID, cmd, rawText, time.Since(cmdStart), len(reply), sendErr)
+		devLogTelegramCommand(rawChatID, cmd, time.Since(cmdStart), len(reply), sendErr)
 	}
 
 	return nextOffset, nil
