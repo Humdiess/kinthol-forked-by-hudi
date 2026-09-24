@@ -5,9 +5,46 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"slices"
 	"testing"
 )
+
+func TestCookieSessionPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.json")
+	urls := []string{"https://ethol.pens.ac.id", "https://ethol.pens.ac.id/api"}
+	target, err := url.Parse("https://ethol.pens.ac.id/")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jar, err := newSyncCookieJar()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jar.SetCookies(target, []*http.Cookie{{Name: "ETHOL_SESS", Value: "abc", Path: "/"}})
+	if err := SaveCookies(jar, path, urls); err != nil {
+		t.Fatalf("save cookies: %v", err)
+	}
+
+	restored, err := newSyncCookieJar()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadCookies(restored, path, urls); err != nil {
+		t.Fatalf("load cookies: %v", err)
+	}
+	got := restored.Cookies(target)
+	if len(got) != 1 || got[0].Value != "abc" {
+		t.Fatalf("restored cookies = %+v, want ETHOL_SESS=abc", got)
+	}
+
+	if err := LoadCookies(restored, filepath.Join(dir, "missing.json"), urls); err == nil {
+		t.Error("expected error loading a missing session file")
+	}
+}
 
 var legitUserAgents = func() []string {
 	uas := make([]string, len(browserProfiles))

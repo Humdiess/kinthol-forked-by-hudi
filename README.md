@@ -131,6 +131,7 @@ When `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` are configured, the daemon listens 
 | `/pengumuman`     | All              | Displays official campus announcements and important bulletins                   |
 | `/presensi_kelas` | Auto-Presence    | Displays live attendance roster and count for active class sessions              |
 | `/rekap`          | All              | Official attendance rate and per-course session breakdown                        |
+| `/export`         | All              | Sends the semester attendance recap as a CSV document                            |
 | `/whoami`         | All              | Displays linked student profile (Name, NRP, ID)                                  |
 | `/today`          | Auto-Presence    | Lists presence keys successfully recorded today                                  |
 | `/relogin`        | All              | Forces re-authentication with CAS SSO and resets session cookies                 |

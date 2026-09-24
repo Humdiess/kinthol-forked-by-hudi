@@ -2,12 +2,16 @@ package ethol
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -226,4 +230,84 @@ func NewHTTPClient() (*http.Client, error) {
 		Transport: &headerTransport{base: transport, profile: randomBrowserProfile()},
 		Timeout:   30 * time.Second,
 	}, nil
+}
+
+type cookieSession struct {
+	Cookies map[string][]*http.Cookie `json:"cookies"`
+}
+
+// SaveCookies persists the cookies matching urls to path using an atomic write.
+// It is used to reuse the CAS session across restarts.
+func SaveCookies(jar http.CookieJar, path string, urls []string) error {
+	if jar == nil || path == "" {
+		return nil
+	}
+	session := cookieSession{Cookies: make(map[string][]*http.Cookie)}
+	for _, raw := range urls {
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if cookies := jar.Cookies(u); len(cookies) > 0 {
+			session.Cookies[raw] = cookies
+		}
+	}
+	if len(session.Cookies) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(session)
+	if err != nil {
+		return fmt.Errorf("marshal cookie session: %w", err)
+	}
+	return writeFileAtomic(path, data, 0600)
+}
+
+// LoadCookies restores cookies previously written by SaveCookies.
+func LoadCookies(jar http.CookieJar, path string, urls []string) error {
+	if jar == nil || path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var session cookieSession
+	if err := json.Unmarshal(data, &session); err != nil {
+		return fmt.Errorf("parse cookie session: %w", err)
+	}
+	for _, raw := range urls {
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if cookies := session.Cookies[raw]; len(cookies) > 0 {
+			jar.SetCookies(u, cookies)
+		}
+	}
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".session-*")
+	if err != nil {
+		return fmt.Errorf("create temp session file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

@@ -6,9 +6,48 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestRestoreSession(t *testing.T) {
+	var valid atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/validasi-token" {
+			http.NotFound(w, r)
+			return
+		}
+		if !valid.Load() {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Write([]byte(`{"nomor":7,"nama":"Budi","nipnrp":"3120"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := NewAuthManager(client, server.URL, "u", "p")
+
+	if _, err := auth.RestoreSession(context.Background()); err == nil {
+		t.Error("expected restore to fail with an invalid session")
+	}
+
+	valid.Store(true)
+	user, err := auth.RestoreSession(context.Background())
+	if err != nil {
+		t.Fatalf("restore session: %v", err)
+	}
+	if user == nil || user.Nama != "Budi" {
+		t.Fatalf("restored user = %+v", user)
+	}
+	if auth.User() == nil {
+		t.Error("expected cached user after restore")
+	}
+}
 
 func TestCASAuthFlow(t *testing.T) {
 	var (

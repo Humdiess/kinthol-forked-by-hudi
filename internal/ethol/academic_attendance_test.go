@@ -12,6 +12,32 @@ import (
 	"time"
 )
 
+func TestAttendanceCSV(t *testing.T) {
+	stats := &AttendanceStats{
+		Breakdown: []CourseAttendance{
+			{Nama: "Algoritma", Hadir: 8, Total: 10, MToday: 1, DToday: 1},
+			{Nama: "Jaringan, Komputer", Hadir: 0, Total: 0},
+		},
+	}
+	got, err := attendanceCSV(stats)
+	if err != nil {
+		t.Fatalf("attendanceCSV: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected header + 2 rows, got %d lines: %q", len(lines), got)
+	}
+	if !strings.HasPrefix(lines[0], "Mata Kuliah,Hadir,Total Sesi") {
+		t.Errorf("unexpected header: %q", lines[0])
+	}
+	if lines[1] != "Algoritma,8,10,80.0,1,1" {
+		t.Errorf("row 1 = %q", lines[1])
+	}
+	if lines[2] != `"Jaringan, Komputer",0,0,100.0,0,0` {
+		t.Errorf("row 2 = %q", lines[2])
+	}
+}
+
 func TestAcademicManager_Attendance(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -97,3 +97,12 @@ If a user session already exists:
 
 In `commands.go`, the code handles user `/relogin` commands from Telegram.
 When a complete session reset is necessary, the system clears current user data and repeats the full four-step login sequence.
+
+### Session Persistence
+
+Session cookies are persisted to `<state>.session` after a successful login.
+On startup the daemon loads them and calls `AuthManager.RestoreSession()`, which
+validates the stored session against `/api/auth/validasi-token`. When validation
+succeeds the daemon skips the full CAS login; otherwise it falls back to a fresh
+login. This avoids re-authentication on every restart while the session remains
+valid.

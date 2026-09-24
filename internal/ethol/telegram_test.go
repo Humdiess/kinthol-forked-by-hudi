@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -36,6 +37,47 @@ func (tn *TelegramNotifier) PollOnce(ctx context.Context, offset int64, handler 
 	}
 
 	return nextOffset, nil
+}
+
+func TestTelegramNotifier_SendDocument(t *testing.T) {
+	var (
+		gotFilename string
+		gotContent  string
+		gotCaption  string
+		gotChatID   string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotChatID = r.FormValue("chat_id")
+		gotCaption = r.FormValue("caption")
+		file, header, err := r.FormFile("document")
+		if err != nil {
+			t.Errorf("form file: %v", err)
+			return
+		}
+		defer file.Close()
+		gotFilename = header.Filename
+		data, _ := io.ReadAll(file)
+		gotContent = string(data)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn := NewTelegramNotifier(client, server.URL, "token", "123")
+	if err := tn.SendDocument(context.Background(), "rekap.csv", []byte("a,b\n1,2\n"), "caption", 0); err != nil {
+		t.Fatalf("send document: %v", err)
+	}
+	if gotFilename != "rekap.csv" || gotContent != "a,b\n1,2\n" || gotCaption != "caption" || gotChatID != "123" {
+		t.Errorf("filename=%q content=%q caption=%q chat=%q", gotFilename, gotContent, gotCaption, gotChatID)
+	}
 }
 
 func TestStartCommandPollerProcessesUpdates(t *testing.T) {

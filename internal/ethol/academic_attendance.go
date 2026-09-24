@@ -2,12 +2,14 @@ package ethol
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -290,6 +292,40 @@ func (am *AcademicManager) FormatAttendanceStatsText(ctx context.Context, now ti
 	}
 
 	return strings.TrimSpace(sb.String()), nil
+}
+
+// FormatAttendanceCSV renders the semester attendance recap as CSV.
+func (am *AcademicManager) FormatAttendanceCSV(ctx context.Context, now time.Time, tahun, semester, studentID int, courses []Course) (string, error) {
+	stats, err := am.getAttendanceStatsAt(ctx, now, tahun, semester, studentID, courses)
+	if err != nil {
+		return "", err
+	}
+	return attendanceCSV(stats)
+}
+
+func attendanceCSV(stats *AttendanceStats) (string, error) {
+	var sb strings.Builder
+	w := csv.NewWriter(&sb)
+	_ = w.Write([]string{"Mata Kuliah", "Hadir", "Total Sesi", "Persentase", "Hadir Hari Ini", "Sesi Hari Ini"})
+	for _, c := range stats.Breakdown {
+		pct := 100.0
+		if c.Total > 0 {
+			pct = (float64(c.Hadir) / float64(c.Total)) * 100.0
+		}
+		_ = w.Write([]string{
+			c.Nama,
+			strconv.Itoa(c.Hadir),
+			strconv.Itoa(c.Total),
+			fmt.Sprintf("%.1f", pct),
+			strconv.Itoa(c.MToday),
+			strconv.Itoa(c.DToday),
+		})
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return "", fmt.Errorf("encode attendance csv: %w", err)
+	}
+	return sb.String(), nil
 }
 
 func (am *AcademicManager) fetchStudentHistory(ctx context.Context, c Course, studentID int) ([]studentHistoryItem, error) {

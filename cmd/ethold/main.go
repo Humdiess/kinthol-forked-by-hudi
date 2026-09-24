@@ -162,10 +162,21 @@ func run() error {
 		slog.Info("Auto-presence disabled, running in academic-only mode")
 	}
 
-	// Initial authentication test
-	if _, err := auth.Login(ctx); err != nil {
-		slog.Error("Initial CAS SSO login failed", "error", err)
-		return err
+	// Reuse the persisted CAS session when possible, otherwise log in fresh.
+	sessionPath := *statePath + ".session"
+	sessionURLs := []string{baseURL, baseURL + "/api"}
+	if err := ethol.LoadCookies(client.Jar, sessionPath, sessionURLs); err != nil {
+		slog.Debug("No persisted session restored", "error", err)
+	}
+	if _, err := auth.RestoreSession(ctx); err != nil {
+		slog.Info("Persisted session unusable, performing CAS SSO login")
+		if _, err := auth.Login(ctx); err != nil {
+			slog.Error("Initial CAS SSO login failed", "error", err)
+			return err
+		}
+	}
+	if err := ethol.SaveCookies(client.Jar, sessionPath, sessionURLs); err != nil {
+		slog.Warn("Failed to persist session cookies", "error", err)
 	}
 
 	scanner := ethol.NewScanner(auth, courses, presence, academic, state, notifier, *concurrency)
@@ -199,6 +210,8 @@ func run() error {
 			}
 			_ = notifier.SendMessage(ctx, fmt.Sprintf("🔔 <b>%s:</b>\n%s", title, html.EscapeString(ket)))
 		})
+		reminders := ethol.NewReminderEngine(auth, courses, academic, notifier)
+		go reminders.Run(ctx, 5*time.Minute)
 	}
 
 	if *once {

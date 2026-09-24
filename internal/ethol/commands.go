@@ -29,6 +29,7 @@ func (s *Scanner) HandleTelegramCommand(ctx context.Context, cmd string) string 
 				"• /pengumuman - Pengumuman resmi kampus\n" +
 				"• /presensi_kelas - Daftar kehadiran sesi presensi aktif\n" +
 				"• /rekap - Rekap kehadiran semester aktif\n" +
+				"• /export - Unduh rekap kehadiran sebagai CSV\n" +
 				"• /whoami - Informasi akun ETHOL yang terhubung\n" +
 				"• /relogin - Perbarui sesi login CAS\n" +
 				"• /ping - Cek koneksi bot\n" +
@@ -47,6 +48,7 @@ func (s *Scanner) HandleTelegramCommand(ctx context.Context, cmd string) string 
 			"• /pengumuman - Pengumuman resmi kampus\n" +
 			"• /presensi_kelas - Daftar kehadiran sesi presensi aktif\n" +
 			"• /rekap - Rekap kehadiran semester aktif\n" +
+			"• /export - Unduh rekap kehadiran sebagai CSV\n" +
 			"• /whoami - Informasi akun ETHOL yang terhubung\n" +
 			"• /today - Presensi yang tercatat hari ini\n" +
 			"• /relogin - Perbarui sesi login CAS\n" +
@@ -423,6 +425,51 @@ func (s *Scanner) HandleTelegramCommand(ctx context.Context, cmd string) string 
 			return fmt.Sprintf("❌ <b>Gagal Mengambil Rekap:</b> %s", html.EscapeString(err.Error()))
 		}
 		return msg
+
+	case "/export":
+		if s.academic == nil {
+			return "❌ Fitur ekspor rekap tidak tersedia."
+		}
+		if s.notifier == nil {
+			return "❌ Telegram tidak dikonfigurasi."
+		}
+		loadExport := func() (string, error) {
+			user := s.auth.User()
+			if user == nil {
+				if err := s.auth.EnsureSession(ctx); err != nil {
+					return "", err
+				}
+				user = s.auth.User()
+			}
+			studentID := 0
+			if user != nil {
+				studentID = user.Nomor
+			}
+			courses, err := s.courses.GetCourses(ctx)
+			if err != nil {
+				return "", err
+			}
+			tahun, semester, err := s.courses.ActivePeriod(ctx)
+			if err != nil {
+				return "", err
+			}
+			return s.academic.FormatAttendanceCSV(ctx, NowWIB(), tahun, semester, studentID, courses)
+		}
+		csvText, err := loadExport()
+		if errors.Is(err, ErrUnauthorized) {
+			s.auth.MarkSessionExpired()
+			if reErr := s.auth.EnsureSession(ctx); reErr == nil {
+				csvText, err = loadExport()
+			}
+		}
+		if err != nil {
+			return fmt.Sprintf("❌ <b>Gagal Ekspor Rekap:</b> %s", html.EscapeString(err.Error()))
+		}
+		filename := fmt.Sprintf("rekap_presensi_%s.csv", NowWIB().Format("2006-01-02"))
+		if err := s.notifier.SendDocument(ctx, filename, []byte(csvText), "📊 Rekap presensi semester aktif", s.notifier.commandThreadID); err != nil {
+			return fmt.Sprintf("❌ <b>Gagal Mengirim CSV:</b> %s", html.EscapeString(err.Error()))
+		}
+		return "✅ <b>Rekap presensi dikirim sebagai CSV.</b>"
 
 	case "/relogin":
 		s.cmdState.mu.Lock()

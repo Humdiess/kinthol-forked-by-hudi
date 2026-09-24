@@ -92,6 +92,10 @@ Additionally, all bot commands support human-friendly text aliases (with or with
 #### `/rekap`
 - **Description:** Displays overall attendance percentages and a course-by-course breakdown for the semester.
 
+#### `/export`
+- **Description:** Sends the semester attendance recap as a CSV document.
+- **Response:** Uploads `rekap_presensi_<date>.csv` and confirms delivery.
+
 ---
 
 ## Action Commands
@@ -105,3 +109,14 @@ Additionally, all bot commands support human-friendly text aliases (with or with
 - **Description:** Forces a session re-authentication against the PENS CAS server.
 - **Response:** Confirms successful authentication or reports an error message.
 - **Note:** Enforces a 30-second cooldown between invocations to prevent rapid re-authentication loops.
+
+---
+
+## Proactive Reminders
+
+When Telegram is configured, the daemon polls the schedule and task list every 5 minutes and pushes reminders automatically:
+
+- **Class start:** sent when a class begins within 15 minutes.
+- **Task deadline:** sent when a pending assignment is due within 24 hours.
+
+Each reminder is delivered once; sent keys are deduplicated in memory and expire after 48 hours.

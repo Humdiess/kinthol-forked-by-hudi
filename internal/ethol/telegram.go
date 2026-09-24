@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -746,6 +747,61 @@ func (tn *TelegramNotifier) SendChatAction(ctx context.Context, action string, t
 	return nil
 }
 
+// SendDocument uploads content as a document via sendDocument (multipart).
+func (tn *TelegramNotifier) SendDocument(ctx context.Context, filename string, content []byte, caption string, threadID int64) error {
+	if tn.token == "" || tn.chatID == "" {
+		return nil
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("chat_id", tn.chatID)
+	if threadID != 0 {
+		_ = mw.WriteField("message_thread_id", strconv.FormatInt(threadID, 10))
+	}
+	if caption != "" {
+		_ = mw.WriteField("caption", caption)
+		_ = mw.WriteField("parse_mode", "HTML")
+	}
+	part, err := mw.CreateFormFile("document", filename)
+	if err != nil {
+		return fmt.Errorf("create document part: %w", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		return fmt.Errorf("write document content: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/bot%s/sendDocument", tn.baseURL, tn.token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &buf)
+	if err != nil {
+		return tn.sanitizeError(fmt.Errorf("create sendDocument req: %w", err))
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	client := tn.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return tn.sanitizeError(fmt.Errorf("send document request: %w", err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		errText := strings.TrimSpace(string(respBody))
+		if errText != "" {
+			return tn.sanitizeError(fmt.Errorf("telegram sendDocument api error: HTTP %d: %s", resp.StatusCode, errText))
+		}
+		return fmt.Errorf("telegram sendDocument api error: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 var commandTextAliases = map[string]string{
 	// Keyboard buttons & friendly text
 	"📅 jadwal":         "/jadwal",
@@ -787,6 +843,10 @@ var commandTextAliases = map[string]string{
 	"ujian":         "/ujian",
 	"exams":         "/ujian",
 	"exam":          "/ujian",
+	"📤 export":      "/export",
+	"export":        "/export",
+	"ekspor":        "/export",
+	"csv":           "/export",
 	"📖 mata kuliah": "/courses",
 	"mata kuliah":   "/courses",
 	"matkul":        "/courses",

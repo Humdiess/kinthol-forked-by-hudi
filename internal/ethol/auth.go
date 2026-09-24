@@ -125,6 +125,21 @@ func (a *AuthManager) loginLocked(ctx context.Context) (*UserInfo, error) {
 	devLog("CAS credentials submitted", "status", postResp.StatusCode)
 
 	// 4. Validate token
+	user, err := a.fetchUserInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	a.mu.Lock()
+	a.user = user
+	a.lastLogin = time.Now()
+	a.mu.Unlock()
+
+	slog.Info("Authentication successful", "user_present", user.Nama != "")
+	return user, nil
+}
+
+func (a *AuthManager) fetchUserInfo(ctx context.Context) (*UserInfo, error) {
 	valURL := a.baseURL + "/api/auth/validasi-token"
 	valReq, err := http.NewRequestWithContext(ctx, http.MethodGet, valURL, nil)
 	if err != nil {
@@ -146,14 +161,25 @@ func (a *AuthManager) loginLocked(ctx context.Context) (*UserInfo, error) {
 		return nil, fmt.Errorf("decode user info: %w", err)
 	}
 	devLog("CAS token validated", "user_present", user.Nama != "", "identifier_present", user.NipNrp != "")
+	return &user, nil
+}
 
+// RestoreSession validates persisted session cookies and populates user info
+// without a full CAS login. It returns an error when the session is invalid.
+func (a *AuthManager) RestoreSession(ctx context.Context) (*UserInfo, error) {
+	a.refreshMu.Lock()
+	defer a.refreshMu.Unlock()
+
+	user, err := a.fetchUserInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
 	a.mu.Lock()
-	a.user = &user
+	a.user = user
 	a.lastLogin = time.Now()
 	a.mu.Unlock()
-
-	slog.Info("Authentication successful", "user_present", user.Nama != "")
-	return &user, nil
+	devLog("Session restored from persisted cookies", "user_present", user.Nama != "")
+	return user, nil
 }
 
 type cookieResetter interface {

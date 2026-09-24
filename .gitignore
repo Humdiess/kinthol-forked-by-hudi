@@ -1,6 +1,9 @@
 .env
 credentials.json
 attended_keys.json
+attended_keys.json.*
+*.session
+*.lock
 /ethold
 *.log
 *.tmp

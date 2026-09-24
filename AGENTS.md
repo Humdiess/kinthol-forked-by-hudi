@@ -48,6 +48,7 @@ internal/ethol/                  # all domain code (flat, single package)
   academic_announcements.go # campus announcements fetch, formatting
   academic_attendance.go    # class roster, attendance stats, riwayat
   academic_notif.go         # notification polling and mark-read
+  reminders.go              # proactive class-start and task-deadline reminders
   debug.go                  # /debug Telegram command, runtime diagnostics
   log.go                    # pretty CLI log handler with color support
   dev_log.go               # dev-only verbose logging (build tag: dev)

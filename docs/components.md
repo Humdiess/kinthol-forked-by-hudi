@@ -296,8 +296,8 @@ This file interfaces with the Telegram Bot API.
 - `(tn *TelegramNotifier) NotifyServerRecovery(ctx context.Context) error`: Sends server recovery notification.
 - `(tn *TelegramNotifier) NotifyAuthFailure(ctx context.Context, err error) error`: Sends authentication failure alert.
 - `(tn *TelegramNotifier) NotifyStartup(ctx context.Context, info StartupInfo) error`: Sends daemon boot status and operational metadata alert.
-- `(tn *TelegramNotifier) PollOnce(ctx context.Context, offset int64, handler func(ctx context.Context, cmd string) string) (int64, error)`: Fetches single update batch from Telegram API.
-- `(tn *TelegramNotifier) StartCommandPoller(ctx, handler)`: Runs an update polling loop.
+- `(tn *TelegramNotifier) SendDocument(ctx context.Context, filename string, content []byte, caption string, threadID int64) error`: Uploads a document (e.g. CSV export) via Telegram's `sendDocument` endpoint.
+- `(tn *TelegramNotifier) StartCommandPoller(ctx, handler)`: Runs the update polling loop. Fetches updates and dispatches each to a single worker so a slow command never blocks `getUpdates`.
 
 ---
 
@@ -314,3 +314,21 @@ This file implements a custom `slog.Handler` formatting records for terminal rea
 
 - `NewPrettyHandler(w io.Writer, opts *PrettyHandlerOptions) *PrettyHandler`: Instantiates the CLI handler with auto-detected TTY and `NO_COLOR` support. ANSI colors are automatically suppressed when standard output is not a terminal (e.g. piped or Docker without `tty: true`).
 
+
+---
+
+## 13. Reminder Engine (`reminders.go`)
+
+Pushes proactive Telegram reminders for upcoming classes and task deadlines.
+
+### Key Types
+
+- `ReminderEngine`: Holds references to the academic manager, course manager, auth manager, and notifier, plus an in-memory dedupe set.
+
+### Primary Functions
+
+- `NewReminderEngine(auth, courses, academic, notifier) *ReminderEngine`: Constructs the engine.
+- `(re *ReminderEngine) Run(ctx context.Context, interval time.Duration)`: Polls `CheckOnce` on the given interval (default 5 minutes).
+- `(re *ReminderEngine) CheckOnce(ctx context.Context) int`: Sends due reminders and returns the count. Classes starting within 15 minutes and tasks due within 24 hours are notified once.
+
+Sent keys are deduplicated in memory and expire after 48 hours.
