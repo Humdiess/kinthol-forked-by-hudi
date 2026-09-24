@@ -105,7 +105,47 @@ func newStateManager(path string, exclusive bool) (*StateManager, error) {
 		}
 	}
 
+	sm.pruneExpiredLocked(time.Now())
 	return sm, nil
+}
+
+// stateRetentionDays bounds how long date-prefixed attendance records are kept.
+const stateRetentionDays = 365
+
+// pruneExpiredLocked drops date-prefixed keys (YYYY-MM-DD_...) older than the
+// retention horizon. Raw session keys are kept because they drive deduplication.
+// ponytail: pruned only on load; add periodic pruning if a single run outlives
+// the horizon.
+func (sm *StateManager) pruneExpiredLocked(now time.Time) {
+	cutoff := now.AddDate(0, 0, -stateRetentionDays).Format("2006-01-02")
+	for k := range sm.records {
+		if !isDatePrefixedKey(k) {
+			continue
+		}
+		if k[:10] < cutoff {
+			delete(sm.records, k)
+		}
+	}
+}
+
+// isDatePrefixedKey reports whether k starts with a YYYY-MM-DD_ prefix. It avoids
+// time.Parse so pruning stays allocation-free on large state files.
+func isDatePrefixedKey(k string) bool {
+	if len(k) < 11 || k[10] != '_' {
+		return false
+	}
+	for i := 0; i < 10; i++ {
+		if i == 4 || i == 7 {
+			if k[i] != '-' {
+				return false
+			}
+			continue
+		}
+		if k[i] < '0' || k[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (sm *StateManager) Close() error {

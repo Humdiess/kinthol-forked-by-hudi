@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"sync"
@@ -169,18 +168,14 @@ func (a *AuthManager) Relogin(ctx context.Context) (*UserInfo, error) {
 
 	a.mu.Lock()
 	if a.client != nil && a.client.Jar != nil {
-		if cr, ok := a.client.Jar.(cookieResetter); ok {
-			if err := cr.Reset(); err != nil {
-				a.mu.Unlock()
-				return nil, fmt.Errorf("reset cookie jar: %w", err)
-			}
-		} else {
-			jar, err := cookiejar.New(nil)
-			if err != nil {
-				a.mu.Unlock()
-				return nil, fmt.Errorf("reset cookie jar: %w", err)
-			}
-			a.client.Jar = jar
+		cr, ok := a.client.Jar.(cookieResetter)
+		if !ok {
+			a.mu.Unlock()
+			return nil, errors.New("cookie jar does not support reset")
+		}
+		if err := cr.Reset(); err != nil {
+			a.mu.Unlock()
+			return nil, fmt.Errorf("reset cookie jar: %w", err)
 		}
 	}
 	a.user = nil

@@ -79,3 +79,20 @@ func TestGetVersion(t *testing.T) {
 		}
 	})
 }
+
+func TestDetectBuildInfo(t *testing.T) {
+	_, sha := detectBuildInfo()
+	if sha != "" && len(sha) != 7 {
+		t.Errorf("short SHA length = %d, want 7", len(sha))
+	}
+}
+
+func TestDetectGitInfo(t *testing.T) {
+	tag, isExact, sha := detectGitInfo()
+	if isExact && tag == "" {
+		t.Error("isExact is true but tag is empty")
+	}
+	if sha != "" && len(sha) != 7 {
+		t.Errorf("short SHA length = %d, want 7", len(sha))
+	}
+}

@@ -230,6 +230,42 @@ func TestLoadConfigRejectsInvalidTelegramChatID(t *testing.T) {
 	}
 }
 
+func TestParseEnvValue(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "value", "value"},
+		{"double quoted", `"a b"`, "a b"},
+		{"single quoted", `'a b'`, "a b"},
+		{"inline comment", "value # comment", "value"},
+		{"inline tab comment", "value\t# comment", "value"},
+		{"hash without space", "va#lue", "va#lue"},
+		{"escaped quote", `"a\"b"`, `a"b`},
+		{"quoted keeps hash", `"a # b"`, "a # b"},
+		{"empty", "", ""},
+		{"unterminated quote", `"abc`, "abc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseEnvValue(tt.in); got != tt.want {
+				t.Errorf("parseEnvValue(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseEnvInlineComment(t *testing.T) {
+	env := parseEnv([]byte("KEY=value # note\nQUOTED=\"a # b\"\n"))
+	if env["KEY"] != "value" {
+		t.Errorf("KEY = %q, want value", env["KEY"])
+	}
+	if env["QUOTED"] != "a # b" {
+		t.Errorf("QUOTED = %q, want 'a # b'", env["QUOTED"])
+	}
+}
+
 func BenchmarkParseEnv(b *testing.B) {
 	// ponytail: static 15-line env fixture, add file loader benchmark when env size grows
 	raw := []byte(`# Configuration for ethold

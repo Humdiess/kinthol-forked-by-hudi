@@ -37,6 +37,7 @@ type TelegramNotifier struct {
 	deleteWg        sync.WaitGroup
 	markupMu        sync.RWMutex
 	replyMarkup     any
+	authMu          sync.RWMutex
 	allowedUsers    map[int64]struct{}
 	groupDenyAll    bool
 	offsetPath      string
@@ -66,6 +67,8 @@ func NewTelegramNotifier(client *http.Client, baseURL, token, chatID string) *Te
 }
 
 func (tn *TelegramNotifier) SetAllowedUsers(ids []int64) {
+	tn.authMu.Lock()
+	defer tn.authMu.Unlock()
 	tn.allowedUsers = make(map[int64]struct{}, len(ids))
 	for _, id := range ids {
 		tn.allowedUsers[id] = struct{}{}
@@ -116,6 +119,8 @@ func (tn *TelegramNotifier) saveUpdateOffset(offset int64) error {
 }
 
 func (tn *TelegramNotifier) authorizedUser(id int64) bool {
+	tn.authMu.RLock()
+	defer tn.authMu.RUnlock()
 	if tn.groupDenyAll {
 		return false
 	}
@@ -840,20 +845,20 @@ func (tn *TelegramNotifier) answerCallbackQuery(ctx context.Context, queryID, te
 	return nil
 }
 
-func (tn *TelegramNotifier) PollOnce(ctx context.Context, offset int64, handler func(ctx context.Context, cmd string) string) (int64, error) {
+func (tn *TelegramNotifier) fetchUpdates(ctx context.Context, offset int64) ([]tgUpdate, error) {
 	if tn.token == "" || tn.chatID == "" {
-		return offset, nil
+		return nil, nil
 	}
 
 	endpoint := fmt.Sprintf("%s/bot%s/getUpdates?offset=%d&timeout=20", tn.baseURL, tn.token, offset)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return offset, tn.sanitizeError(fmt.Errorf("create getUpdates req: %w", err))
+		return nil, tn.sanitizeError(fmt.Errorf("create getUpdates req: %w", err))
 	}
 
 	resp, err := tn.pollClient.Do(req)
 	if err != nil {
-		return offset, tn.sanitizeError(fmt.Errorf("getUpdates request: %w", err))
+		return nil, tn.sanitizeError(fmt.Errorf("getUpdates request: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -861,265 +866,262 @@ func (tn *TelegramNotifier) PollOnce(ctx context.Context, offset int64, handler 
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		errText := strings.TrimSpace(string(respBody))
 		if errText != "" {
-			return offset, tn.sanitizeError(fmt.Errorf("getUpdates http %d: %s", resp.StatusCode, errText))
+			return nil, tn.sanitizeError(fmt.Errorf("getUpdates http %d: %s", resp.StatusCode, errText))
 		}
-		return offset, fmt.Errorf("getUpdates http %d", resp.StatusCode)
+		return nil, fmt.Errorf("getUpdates http %d", resp.StatusCode)
 	}
 
 	var updatesResp tgUpdatesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&updatesResp); err != nil {
-		return offset, tn.sanitizeError(fmt.Errorf("decode getUpdates: %w", err))
+		return nil, tn.sanitizeError(fmt.Errorf("decode getUpdates: %w", err))
+	}
+	return updatesResp.Result, nil
+}
+
+// processUpdate handles a single Telegram update: authorization, topic and rate
+// filtering, command execution, and reply rendering. It is safe to call from a
+// dedicated worker so the getUpdates loop is never blocked by slow commands.
+func (tn *TelegramNotifier) processUpdate(ctx context.Context, u tgUpdate, handler func(ctx context.Context, cmd string) string) {
+	var (
+		rawChatID   int64
+		rawThreadID int64
+		rawText     string
+		userMsgID   int64
+		callbackID  string
+	)
+
+	if u.Message != nil {
+		rawChatID = u.Message.Chat.ID
+		rawThreadID = u.Message.MessageThreadID
+		rawText = u.Message.Text
+		userMsgID = u.Message.MessageID
+		if !tn.authorizedUser(u.Message.From.ID) {
+			return
+		}
+	} else if u.CallbackQuery != nil {
+		if u.CallbackQuery.Message != nil {
+			rawChatID = u.CallbackQuery.Message.Chat.ID
+			rawThreadID = u.CallbackQuery.Message.MessageThreadID
+		} else {
+			rawChatID = u.CallbackQuery.From.ID
+		}
+		rawText = u.CallbackQuery.Data
+		callbackID = u.CallbackQuery.ID
+		if !tn.authorizedUser(u.CallbackQuery.From.ID) {
+			return
+		}
+	} else {
+		return
 	}
 
-	nextOffset := offset
-	for _, u := range updatesResp.Result {
-		if u.UpdateID >= nextOffset {
-			nextOffset = u.UpdateID + 1
+	if (tn.chatIDInt != 0 && rawChatID != tn.chatIDInt) || (tn.chatIDInt == 0 && strconv.FormatInt(rawChatID, 10) != tn.chatID) {
+		now := time.Now()
+		tn.unauthMu.Lock()
+		shouldLog := tn.lastUnauthLog.IsZero() || now.Sub(tn.lastUnauthLog) >= 5*time.Second
+		if shouldLog {
+			tn.lastUnauthLog = now
 		}
-
-		var (
-			rawChatID   int64
-			rawThreadID int64
-			rawText     string
-			userMsgID   int64
-			callbackID  string
-		)
-
-		if u.Message != nil {
-			rawChatID = u.Message.Chat.ID
-			rawThreadID = u.Message.MessageThreadID
-			rawText = u.Message.Text
-			userMsgID = u.Message.MessageID
-			if !tn.authorizedUser(u.Message.From.ID) {
-				continue
-			}
-		} else if u.CallbackQuery != nil {
-			if u.CallbackQuery.Message != nil {
-				rawChatID = u.CallbackQuery.Message.Chat.ID
-				rawThreadID = u.CallbackQuery.Message.MessageThreadID
-			} else {
-				rawChatID = u.CallbackQuery.From.ID
-			}
-			rawText = u.CallbackQuery.Data
-			callbackID = u.CallbackQuery.ID
-			if !tn.authorizedUser(u.CallbackQuery.From.ID) {
-				continue
-			}
-		} else {
-			continue
+		tn.unauthMu.Unlock()
+		if shouldLog {
+			slog.Warn("Ignoring Telegram command from unauthorized chat", "chat_id", rawChatID)
 		}
+		devLog("Telegram message from unauthorized chat", "chat_id", rawChatID)
+		return
+	}
 
-		if (tn.chatIDInt != 0 && rawChatID != tn.chatIDInt) || (tn.chatIDInt == 0 && strconv.FormatInt(rawChatID, 10) != tn.chatID) {
-			now := time.Now()
-			tn.unauthMu.Lock()
-			shouldLog := tn.lastUnauthLog.IsZero() || now.Sub(tn.lastUnauthLog) >= 5*time.Second
-			if shouldLog {
-				tn.lastUnauthLog = now
-			}
-			tn.unauthMu.Unlock()
-			if shouldLog {
-				slog.Warn("Ignoring Telegram command from unauthorized chat", "chat_id", rawChatID)
-			}
-			devLog("Telegram message from unauthorized chat", "chat_id", rawChatID)
-			continue
-		}
-
-		cmd := parseCommand(rawText)
-		if cmd == "" {
-			if callbackID != "" {
-				ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-				_ = tn.answerCallbackQuery(ackCtx, callbackID, "")
-				ackCancel()
-			}
-			continue
-		}
-
-		if tn.notifThreadID != 0 && rawThreadID == tn.notifThreadID {
-			slog.Debug("Ignoring Telegram command in notification topic", "cmd", cmd, "thread_id", rawThreadID)
-			devLog("Telegram command in notification topic", "cmd", cmd, "thread_id", rawThreadID)
-			if callbackID != "" {
-				ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-				_ = tn.answerCallbackQuery(ackCtx, callbackID, "⚠️ Perintah tidak dapat digunakan di topik notifikasi.")
-				ackCancel()
-			}
-			continue
-		}
-
-		if tn.commandThreadID != 0 && rawThreadID != tn.commandThreadID {
-			slog.Debug("Ignoring Telegram command outside command topic", "cmd", cmd, "thread_id", rawThreadID, "expected", tn.commandThreadID)
-			devLog("Telegram command outside command topic", "cmd", cmd, "thread_id", rawThreadID, "expected", tn.commandThreadID)
-			if callbackID != "" {
-				ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-				_ = tn.answerCallbackQuery(ackCtx, callbackID, "⚠️ Perintah hanya dapat digunakan di topik perintah.")
-				ackCancel()
-			}
-			continue
-		}
-
-		targetThreadID := rawThreadID
-		if targetThreadID == 0 && tn.commandThreadID != 0 {
-			targetThreadID = tn.commandThreadID
-		}
-
-		if tn.rateLimiter != nil {
-			allowed, warnAllowed := tn.rateLimiter.Allow(time.Now(), 5*time.Second)
-			if !allowed {
-				slog.Warn("Telegram command rate limited", "cmd", cmd)
-				devLog("Telegram command rate limited", "chat_id", rawChatID, "cmd", cmd)
-				if callbackID != "" {
-					ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-					if warnAllowed {
-						_ = tn.answerCallbackQuery(ackCtx, callbackID, "⏳ Terlalu banyak perintah. Harap tunggu.")
-					} else {
-						_ = tn.answerCallbackQuery(ackCtx, callbackID, "")
-					}
-					ackCancel()
-				} else if warnAllowed {
-					_ = tn.SendMessageToThread(ctx, "⏳ <b>Terlalu banyak perintah.</b> Harap tunggu beberapa detik.", targetThreadID)
-				}
-				if userMsgID > 0 {
-					tn.deleteWg.Add(1)
-					go func(mid int64) {
-						defer tn.deleteWg.Done()
-						delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-						defer cancel()
-						_ = tn.DeleteMessages(delCtx, []int64{mid})
-					}(userMsgID)
-				}
-				continue
-			}
-		}
-
+	cmd := parseCommand(rawText)
+	if cmd == "" {
 		if callbackID != "" {
 			ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			_ = tn.answerCallbackQuery(ackCtx, callbackID, "")
 			ackCancel()
 		}
+		return
+	}
 
-		if userMsgID > 0 {
-			tn.deleteWg.Add(1)
-			go func(mid int64) {
-				defer tn.deleteWg.Done()
-				delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-				defer cancel()
-				if err := tn.DeleteMessages(delCtx, []int64{mid}); err != nil {
-					slog.Warn("Failed to delete Telegram user command message", "msg_id", mid, "error", err)
-					devLog("Failed to delete Telegram user command message", "error", err)
-				}
-			}(userMsgID)
+	if tn.notifThreadID != 0 && rawThreadID == tn.notifThreadID {
+		slog.Debug("Ignoring Telegram command in notification topic", "cmd", cmd, "thread_id", rawThreadID)
+		devLog("Telegram command in notification topic", "cmd", cmd, "thread_id", rawThreadID)
+		if callbackID != "" {
+			ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = tn.answerCallbackQuery(ackCtx, callbackID, "⚠️ Perintah tidak dapat digunakan di topik notifikasi.")
+			ackCancel()
 		}
+		return
+	}
 
-		tn.deleteWg.Add(1)
-		go func(threadID int64) {
-			defer tn.deleteWg.Done()
-			actionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancel()
-			_ = tn.SendChatAction(actionCtx, "typing", threadID)
-		}(targetThreadID)
+	if tn.commandThreadID != 0 && rawThreadID != tn.commandThreadID {
+		slog.Debug("Ignoring Telegram command outside command topic", "cmd", cmd, "thread_id", rawThreadID, "expected", tn.commandThreadID)
+		devLog("Telegram command outside command topic", "cmd", cmd, "thread_id", rawThreadID, "expected", tn.commandThreadID)
+		if callbackID != "" {
+			ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = tn.answerCallbackQuery(ackCtx, callbackID, "⚠️ Perintah hanya dapat digunakan di topik perintah.")
+			ackCancel()
+		}
+		return
+	}
 
-		cmdStart := time.Now()
-		cmdCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	targetThreadID := rawThreadID
+	if targetThreadID == 0 && tn.commandThreadID != 0 {
+		targetThreadID = tn.commandThreadID
+	}
 
-		reply := handler(cmdCtx, cmd)
-		cancel()
-		var sendErr error
-		if reply != "" {
-			tn.markupMu.RLock()
-			markup := tn.replyMarkup
-			tn.markupMu.RUnlock()
-
-			var toDelete []int64
-
-			targetEditID := int64(0)
-			if u.CallbackQuery != nil && u.CallbackQuery.Message != nil {
-				targetEditID = u.CallbackQuery.Message.MessageID
-			} else {
-				tn.activeMu.Lock()
-				targetEditID = tn.activeMsgID
-				tn.activeMu.Unlock()
-			}
-
-			tn.activeMu.Lock()
-			if targetEditID > 0 {
-				toDelete = append(toDelete, tn.extraMsgIDs...)
-				tn.extraMsgIDs = nil
-				if tn.activeMsgID > 0 && tn.activeMsgID != targetEditID {
-					toDelete = append(toDelete, tn.activeMsgID)
-				}
-			} else {
-				if tn.activeMsgID > 0 {
-					toDelete = append(toDelete, tn.activeMsgID)
-					tn.activeMsgID = 0
-				}
-				toDelete = append(toDelete, tn.extraMsgIDs...)
-				tn.extraMsgIDs = nil
-			}
-			tn.activeMu.Unlock()
-
-			chunks := splitMessage(reply, maxTelegramMessageLen)
-			edited := false
-
-			if targetEditID > 0 && len(chunks) > 0 {
-				editErr := tn.EditMessageText(ctx, targetEditID, chunks[0], markup)
-				if editErr == nil {
-					edited = true
-					tn.activeMu.Lock()
-					tn.activeMsgID = targetEditID
-					tn.activeMu.Unlock()
-
-					if len(chunks) > 1 {
-						for _, chunk := range chunks[1:] {
-							mid, err := tn.sendSingleMessage(ctx, chunk, nil, targetThreadID)
-							if err != nil {
-								sendErr = err
-								break
-							}
-							if mid > 0 {
-								tn.activeMu.Lock()
-								tn.extraMsgIDs = append(tn.extraMsgIDs, mid)
-								tn.activeMu.Unlock()
-							}
-						}
-					}
+	if tn.rateLimiter != nil {
+		allowed, warnAllowed := tn.rateLimiter.Allow(time.Now(), 5*time.Second)
+		if !allowed {
+			slog.Warn("Telegram command rate limited", "cmd", cmd)
+			devLog("Telegram command rate limited", "chat_id", rawChatID, "cmd", cmd)
+			if callbackID != "" {
+				ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				if warnAllowed {
+					_ = tn.answerCallbackQuery(ackCtx, callbackID, "⏳ Terlalu banyak perintah. Harap tunggu.")
 				} else {
-					slog.Warn("Failed to edit Telegram message, falling back to send", "msg_id", targetEditID, "error", editErr)
-					toDelete = append(toDelete, targetEditID)
+					_ = tn.answerCallbackQuery(ackCtx, callbackID, "")
 				}
+				ackCancel()
+			} else if warnAllowed {
+				_ = tn.SendMessageToThread(ctx, "⏳ <b>Terlalu banyak perintah.</b> Harap tunggu beberapa detik.", targetThreadID)
 			}
-
-			if !edited {
-				var newIDs []int64
-				newIDs, sendErr = tn.SendMessageIDsWithMarkupToThread(ctx, reply, markup, targetThreadID)
-				if sendErr != nil {
-					slog.Error("Failed to reply to Telegram command", "cmd", cmd, "error", sendErr)
-				} else if len(newIDs) > 0 {
-					tn.activeMu.Lock()
-					tn.activeMsgID = newIDs[0]
-					if len(newIDs) > 1 {
-						tn.extraMsgIDs = append(tn.extraMsgIDs, newIDs[1:]...)
-					}
-					tn.activeMu.Unlock()
-				}
-			}
-
-			if len(toDelete) > 0 {
+			if userMsgID > 0 {
 				tn.deleteWg.Add(1)
-				go func(ids []int64) {
+				go func(mid int64) {
 					defer tn.deleteWg.Done()
 					delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 					defer cancel()
-					if err := tn.DeleteMessages(delCtx, ids); err != nil {
-						slog.Warn("Failed to delete previous Telegram messages", "count", len(ids), "error", err)
-						devLog("Failed to delete previous Telegram messages", "error", err)
+					_ = tn.DeleteMessages(delCtx, []int64{mid})
+				}(userMsgID)
+			}
+			return
+		}
+	}
+
+	if callbackID != "" {
+		ackCtx, ackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_ = tn.answerCallbackQuery(ackCtx, callbackID, "")
+		ackCancel()
+	}
+
+	if userMsgID > 0 {
+		tn.deleteWg.Add(1)
+		go func(mid int64) {
+			defer tn.deleteWg.Done()
+			delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			if err := tn.DeleteMessages(delCtx, []int64{mid}); err != nil {
+				slog.Warn("Failed to delete Telegram user command message", "msg_id", mid, "error", err)
+				devLog("Failed to delete Telegram user command message", "error", err)
+			}
+		}(userMsgID)
+	}
+
+	tn.deleteWg.Add(1)
+	go func(threadID int64) {
+		defer tn.deleteWg.Done()
+		actionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = tn.SendChatAction(actionCtx, "typing", threadID)
+	}(targetThreadID)
+
+	cmdStart := time.Now()
+	cmdCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+
+	reply := handler(cmdCtx, cmd)
+	cancel()
+	var sendErr error
+	if reply != "" {
+		tn.markupMu.RLock()
+		markup := tn.replyMarkup
+		tn.markupMu.RUnlock()
+
+		var toDelete []int64
+
+		targetEditID := int64(0)
+		if u.CallbackQuery != nil && u.CallbackQuery.Message != nil {
+			targetEditID = u.CallbackQuery.Message.MessageID
+		} else {
+			tn.activeMu.Lock()
+			targetEditID = tn.activeMsgID
+			tn.activeMu.Unlock()
+		}
+
+		tn.activeMu.Lock()
+		if targetEditID > 0 {
+			toDelete = append(toDelete, tn.extraMsgIDs...)
+			tn.extraMsgIDs = nil
+			if tn.activeMsgID > 0 && tn.activeMsgID != targetEditID {
+				toDelete = append(toDelete, tn.activeMsgID)
+			}
+		} else {
+			if tn.activeMsgID > 0 {
+				toDelete = append(toDelete, tn.activeMsgID)
+				tn.activeMsgID = 0
+			}
+			toDelete = append(toDelete, tn.extraMsgIDs...)
+			tn.extraMsgIDs = nil
+		}
+		tn.activeMu.Unlock()
+
+		chunks := splitMessage(reply, maxTelegramMessageLen)
+		edited := false
+
+		if targetEditID > 0 && len(chunks) > 0 {
+			editErr := tn.EditMessageText(ctx, targetEditID, chunks[0], markup)
+			if editErr == nil {
+				edited = true
+				tn.activeMu.Lock()
+				tn.activeMsgID = targetEditID
+				tn.activeMu.Unlock()
+
+				if len(chunks) > 1 {
+					for _, chunk := range chunks[1:] {
+						mid, err := tn.sendSingleMessage(ctx, chunk, nil, targetThreadID)
+						if err != nil {
+							sendErr = err
+							break
+						}
+						if mid > 0 {
+							tn.activeMu.Lock()
+							tn.extraMsgIDs = append(tn.extraMsgIDs, mid)
+							tn.activeMu.Unlock()
+						}
 					}
-				}(toDelete)
+				}
+			} else {
+				slog.Warn("Failed to edit Telegram message, falling back to send", "msg_id", targetEditID, "error", editErr)
+				toDelete = append(toDelete, targetEditID)
 			}
 		}
 
-		devLogTelegramCommand(rawChatID, cmd, time.Since(cmdStart), len(reply), sendErr)
+		if !edited {
+			var newIDs []int64
+			newIDs, sendErr = tn.SendMessageIDsWithMarkupToThread(ctx, reply, markup, targetThreadID)
+			if sendErr != nil {
+				slog.Error("Failed to reply to Telegram command", "cmd", cmd, "error", sendErr)
+			} else if len(newIDs) > 0 {
+				tn.activeMu.Lock()
+				tn.activeMsgID = newIDs[0]
+				if len(newIDs) > 1 {
+					tn.extraMsgIDs = append(tn.extraMsgIDs, newIDs[1:]...)
+				}
+				tn.activeMu.Unlock()
+			}
+		}
+
+		if len(toDelete) > 0 {
+			tn.deleteWg.Add(1)
+			go func(ids []int64) {
+				defer tn.deleteWg.Done()
+				delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				defer cancel()
+				if err := tn.DeleteMessages(delCtx, ids); err != nil {
+					slog.Warn("Failed to delete previous Telegram messages", "count", len(ids), "error", err)
+					devLog("Failed to delete previous Telegram messages", "error", err)
+				}
+			}(toDelete)
+		}
 	}
 
-	return nextOffset, nil
+	devLogTelegramCommand(rawChatID, cmd, time.Since(cmdStart), len(reply), sendErr)
 }
 
 func (tn *TelegramNotifier) StartCommandPoller(ctx context.Context, handler func(ctx context.Context, cmd string) string) {
@@ -1128,16 +1130,33 @@ func (tn *TelegramNotifier) StartCommandPoller(ctx context.Context, handler func
 	}
 	slog.Info("Starting Telegram command poller")
 	offset := tn.loadUpdateOffset()
+
+	// Commands run on a single worker so long handlers never block getUpdates
+	// while still executing in order.
+	queue := make(chan tgUpdate, 16)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case u := <-queue:
+				tn.processUpdate(ctx, u, handler)
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
+			tn.deleteWg.Wait()
 			return
 		default:
 		}
 
-		nextOffset, err := tn.PollOnce(ctx, offset, handler)
+		updates, err := tn.fetchUpdates(ctx, offset)
 		if err != nil {
 			if ctx.Err() != nil {
+				tn.deleteWg.Wait()
 				return
 			}
 			slog.Warn("Telegram poller error", "error", err)
@@ -1145,12 +1164,25 @@ func (tn *TelegramNotifier) StartCommandPoller(ctx context.Context, handler func
 			select {
 			case <-ctx.Done():
 				timer.Stop()
+				tn.deleteWg.Wait()
 				return
 			case <-timer.C:
 			}
 			continue
 		}
-		offset = nextOffset
+
+		for _, u := range updates {
+			if u.UpdateID >= offset {
+				offset = u.UpdateID + 1
+			}
+			select {
+			case queue <- u:
+			case <-ctx.Done():
+				tn.deleteWg.Wait()
+				return
+			}
+		}
+
 		if err := tn.saveUpdateOffset(offset); err != nil {
 			slog.Warn("Failed to persist Telegram update offset", "error", err)
 		}

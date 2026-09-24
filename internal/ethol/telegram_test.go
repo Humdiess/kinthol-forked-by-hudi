@@ -19,6 +19,79 @@ func waitPendingDeletions(tn *TelegramNotifier) {
 	tn.deleteWg.Wait()
 }
 
+// PollOnce is a synchronous single-shot poll kept for tests. Production uses
+// StartCommandPoller, which dispatches updates to a dedicated worker.
+func (tn *TelegramNotifier) PollOnce(ctx context.Context, offset int64, handler func(ctx context.Context, cmd string) string) (int64, error) {
+	updates, err := tn.fetchUpdates(ctx, offset)
+	if err != nil {
+		return offset, err
+	}
+
+	nextOffset := offset
+	for _, u := range updates {
+		if u.UpdateID >= nextOffset {
+			nextOffset = u.UpdateID + 1
+		}
+		tn.processUpdate(ctx, u, handler)
+	}
+
+	return nextOffset, nil
+}
+
+func TestStartCommandPollerProcessesUpdates(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/bottoken/getUpdates":
+			if calls.Add(1) == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": []map[string]any{
+					{"update_id": 1, "message": map[string]any{
+						"message_id": 5,
+						"text":       "/ping",
+						"chat":       map[string]any{"id": 123},
+						"from":       map[string]any{"id": 7},
+					}},
+				}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": []any{}})
+		default:
+			w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn := NewTelegramNotifier(client, server.URL, "token", "123")
+	tn.SetUpdateOffsetPath(filepath.Join(t.TempDir(), "offset"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handled := make(chan string, 1)
+	go tn.StartCommandPoller(ctx, func(_ context.Context, cmd string) string {
+		select {
+		case handled <- cmd:
+		default:
+		}
+		return "pong"
+	})
+
+	select {
+	case cmd := <-handled:
+		if cmd != "/ping" {
+			t.Errorf("handled cmd = %q, want /ping", cmd)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("poller did not process the update")
+	}
+	cancel()
+	tn.deleteWg.Wait()
+}
+
 func TestTelegramNotifier_PollOnce(t *testing.T) {
 	var offsetRequested atomic.Int64
 	var sentMessages []string

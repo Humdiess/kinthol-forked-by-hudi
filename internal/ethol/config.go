@@ -46,13 +46,44 @@ func parseEnv(data []byte) map[string]string {
 			continue
 		}
 		key := strings.TrimSpace(parts[0])
-		val := strings.TrimSpace(parts[1])
-		if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
-			val = val[1 : len(val)-1]
-		}
-		env[key] = val
+		env[key] = parseEnvValue(strings.TrimSpace(parts[1]))
 	}
 	return env
+}
+
+// parseEnvValue handles quoted values with escaped characters and strips inline
+// comments from unquoted values.
+func parseEnvValue(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if raw[0] == '"' || raw[0] == '\'' {
+		quote := raw[0]
+		// Fast path: quoted value with no escape sequence returns a substring.
+		if end := strings.IndexByte(raw[1:], quote); end >= 0 && !strings.ContainsRune(raw[1:1+end], '\\') {
+			return raw[1 : 1+end]
+		}
+		var b strings.Builder
+		for i := 1; i < len(raw); i++ {
+			if raw[i] == '\\' && i+1 < len(raw) {
+				b.WriteByte(raw[i+1])
+				i++
+				continue
+			}
+			if raw[i] == quote {
+				return b.String()
+			}
+			b.WriteByte(raw[i])
+		}
+		return b.String()
+	}
+	for i := 1; i < len(raw); i++ {
+		if raw[i] == '#' && (raw[i-1] == ' ' || raw[i-1] == '\t') {
+			raw = raw[:i]
+			break
+		}
+	}
+	return strings.TrimSpace(raw)
 }
 
 func resolveValue(override, key string, fileEnv map[string]string) string {

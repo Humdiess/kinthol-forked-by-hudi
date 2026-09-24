@@ -1,11 +1,44 @@
 package ethol
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestStateManagerPrunesExpiredRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	recent := TodayDate(NowWIB()) + "_recent"
+	old := "2000-01-01_old"
+
+	sf := stateFile{
+		AttendedKeys: []string{recent, old, "raw-key"},
+		LastUpdated:  "2000-01-01T00:00:00Z",
+	}
+	data, err := json.Marshal(sf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	sm, err := NewStateManager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sm.Has(recent) {
+		t.Errorf("recent record was pruned")
+	}
+	if !sm.Has("raw-key") {
+		t.Errorf("raw session key was pruned")
+	}
+	if sm.Has(old) {
+		t.Errorf("expired record was not pruned")
+	}
+}
 
 // NewStateManager is a non-exclusive state manager used only by tests.
 func NewStateManager(path string) (*StateManager, error) {
