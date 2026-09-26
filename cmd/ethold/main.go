@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -93,6 +94,13 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", ".env", "Path to .env config file")
+	serviceMode := flag.Bool("service", false, "Run multi-tenant service mode")
+	serviceAddr := flag.String("service-addr", "", "Multi-tenant service listen address")
+	serviceStatePath := flag.String("service-state", "", "Multi-tenant state path")
+	serviceAdminToken := flag.String("service-admin-token", "", "Multi-tenant admin bearer token")
+	serviceEncryptionKey := flag.String("service-encryption-key", "", "Multi-tenant credential encryption key")
+	serviceBaseURL := flag.String("service-base-url", "", "ETHOL base URL for multi-tenant workers")
+	serviceWorkerConcurrency := flag.Int("service-worker-concurrency", 0, "Per-tenant worker concurrency")
 	statePath := flag.String("state", "attended_keys.json", "Path to state file")
 	once := flag.Bool("once", false, "Run single scan pass and exit")
 	concurrency := flag.Int("concurrency", 4, "Concurrent workers for course checking")
@@ -114,6 +122,29 @@ func run() error {
 	logLevel := ethol.DefaultLogLevel(*verbose)
 	slog.SetDefault(slog.New(ethol.NewPrettyHandler(os.Stdout, &ethol.PrettyHandlerOptions{Level: logLevel})))
 	slog.Info("Starting ethold", "version", getVersion())
+
+	if *serviceMode {
+		cfg, err := ethol.LoadServiceConfig(*configPath, ethol.ServiceConfig{
+			Addr:              *serviceAddr,
+			StatePath:         *serviceStatePath,
+			AdminToken:        *serviceAdminToken,
+			EncryptionKey:     *serviceEncryptionKey,
+			BaseURL:           *serviceBaseURL,
+			WorkerConcurrency: *serviceWorkerConcurrency,
+		})
+		if err != nil {
+			slog.Error("Failed to load service configuration", "path", *configPath, "error", err)
+			return err
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := ethol.StartMultiTenantService(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("Multi-tenant service stopped with error", "error", err)
+			return err
+		}
+		slog.Info("Multi-tenant service stopped")
+		return nil
+	}
 
 	cfg, err := ethol.LoadConfig(*configPath, ethol.Config{
 		Username:                *username,
