@@ -23,6 +23,15 @@ type Config struct {
 	HealthAddr              string
 }
 
+type ServiceConfig struct {
+	Addr              string
+	StatePath         string
+	AdminToken        string
+	EncryptionKey     string
+	BaseURL           string
+	WorkerConcurrency int
+}
+
 func parseBool(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "true", "1", "yes":
@@ -100,6 +109,14 @@ func parseConfigInt64(s, key string) (int64, error) {
 	v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 	if err != nil || v < 0 {
 		return 0, fmt.Errorf("%s must be a non-negative integer", key)
+	}
+
+	func parsePositiveInt(s, key string) (int, error) {
+		v, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil || v <= 0 {
+			return 0, fmt.Errorf("%s must be a positive integer", key)
+		}
+		return v, nil
 	}
 	return v, nil
 }
@@ -191,6 +208,63 @@ func resolveUserIDs(key string, fileEnv map[string]string) ([]int64, error) {
 func resolveConfigInt64(override int64, key string, fileEnv map[string]string) (int64, error) {
 	if override != 0 {
 		return override, nil
+	}
+
+	func LoadServiceConfig(path string, override ServiceConfig) (*ServiceConfig, error) {
+		env := make(map[string]string)
+		if path != "" {
+			data, err := os.ReadFile(path)
+			if err != nil && !os.IsNotExist(err) {
+				return nil, fmt.Errorf("read config file: %w", err)
+			}
+			if err == nil {
+				env = parseEnv(data)
+			}
+		}
+
+		cfg := &ServiceConfig{
+			Addr:          resolveValue(override.Addr, "ETHOL_SERVICE_ADDR", env),
+			StatePath:     resolveValue(override.StatePath, "ETHOL_SERVICE_STATE_PATH", env),
+			AdminToken:    resolveValue(override.AdminToken, "ETHOL_SERVICE_ADMIN_TOKEN", env),
+			EncryptionKey: resolveValue(override.EncryptionKey, "ETHOL_SERVICE_ENCRYPTION_KEY", env),
+			BaseURL:       resolveValue(override.BaseURL, "ETHOL_SERVICE_BASE_URL", env),
+		}
+		if cfg.StatePath == "" {
+			cfg.StatePath = "ethold_service_state.json"
+		}
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = "https://ethol.pens.ac.id"
+		}
+
+		concurrency := override.WorkerConcurrency
+		if concurrency == 0 {
+			value := os.Getenv("ETHOL_SERVICE_WORKER_CONCURRENCY")
+			if value == "" {
+				value = env["ETHOL_SERVICE_WORKER_CONCURRENCY"]
+			}
+			if value == "" {
+				concurrency = 4
+			} else {
+				v, err := parsePositiveInt(value, "ETHOL_SERVICE_WORKER_CONCURRENCY")
+				if err != nil {
+					return nil, err
+				}
+				concurrency = v
+			}
+		}
+		cfg.WorkerConcurrency = concurrency
+
+		if strings.TrimSpace(cfg.Addr) == "" {
+			return nil, errors.New("ETHOL_SERVICE_ADDR is required in service mode")
+		}
+		if strings.TrimSpace(cfg.AdminToken) == "" {
+			return nil, errors.New("ETHOL_SERVICE_ADMIN_TOKEN is required in service mode")
+		}
+		if strings.TrimSpace(cfg.EncryptionKey) == "" {
+			return nil, errors.New("ETHOL_SERVICE_ENCRYPTION_KEY is required in service mode")
+		}
+
+		return cfg, nil
 	}
 	value := os.Getenv(key)
 	if value == "" {
